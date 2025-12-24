@@ -1,0 +1,87 @@
+name: Build and Push APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Debug
+          - Release
+      release_description:
+        description: 'Release Description'
+        required: false
+        default: 'Manual build from GitHub Actions'
+      tester_groups:
+        description: 'Tester Groups (comma-separated)'
+        required: false
+        default: 'qa'
+
+jobs:
+  build-and-distribute:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Create release notes
+        run: |
+          mkdir -p app/build
+          cat > app/build/release-notes.txt << EOF
+          BuildType: ${{ github.event.inputs.build_type }}
+          Branch: ${{ github.ref_name }}
+          Description: ${{ github.event.inputs.release_description }}
+          Author: ${{ github.actor }}
+          Groups: ${{ github.event.inputs.tester_groups }}
+          EOF
+
+      - name: Decode Google Services JSON
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json
+
+      - name: Decode Firebase Service Account Key
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT" | base64 -d > service-key.json
+
+      - name: Build APK
+        run: ./gradlew assemble${{ github.event.inputs.build_type }}
+
+      - name: Upload APK to Firebase App Distribution
+        run: ./gradlew appDistributionUpload${{ github.event.inputs.build_type }}
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: service-key.json
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ github.event.inputs.build_type }}-${{ github.run_number }}
+          path: app/build/outputs/apk/**/*.apk
+          retention-days: 30
